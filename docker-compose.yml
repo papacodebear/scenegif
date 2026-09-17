@@ -1,0 +1,21 @@
+services:
+  gateway:
+    build:
+      context: .
+      args:
+        GIT_SHA: "${GIT_SHA:-unknown}"
+    container_name: scenegif-gateway
+    restart: unless-stopped
+    env_file: .env
+    networks:
+      - default
+      - edge
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  edge:
+    external: true

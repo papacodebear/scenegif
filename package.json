@@ -1,0 +1,23 @@
+{
+  "name": "scenegif",
+  "version": "0.1.0",
+  "type": "module",
+  "engines": { "node": "24.x" },
+  "scripts": {
+    "start": "node src/gateway.js",
+    "worker": "node src/worker.js",
+    "register": "node src/register.js",
+    "dev": "nodemon src/gateway.js"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.5.0",
+    "bullmq": "^5.0.0",
+    "discord-interactions": "^4.4.0",
+    "dotenv": "^17.0.0",
+    "express": "^5.2.0",
+    "ioredis": "^5.4.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
+}
