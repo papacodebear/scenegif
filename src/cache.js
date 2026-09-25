@@ -1,40 +1,32 @@
 import { createHash } from 'crypto';
 import { mkdirSync, readdirSync, statSync, unlinkSync, utimesSync } from 'fs';
 import path from 'path';
-import { URL } from 'url';
-
-import { Redis } from 'ioredis';
 
 import { config } from './config.js';
 
-export function redisClient() {
-  return new Redis(config.redisUrl, { lazyConnect: false, maxRetriesPerRequest: null });
-}
-
-export function redisConnection() {
-  const u = new URL(config.redisUrl);
-  return {
-    host: u.hostname,
-    port: parseInt(u.port) || 6379,
-    password: u.password || undefined,
-    db: parseInt(u.pathname.slice(1)) || 0,
-  };
-}
+const store = new Map();
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of store) if (entry.expiresAt && entry.expiresAt < now) store.delete(key);
+}, 60 * 60 * 1000).unref();
 
 export function sceneHash(...parts) {
   const combined = parts.map(p => p.toLowerCase().trim()).join('|');
   return createHash('sha256').update(combined).digest('hex').slice(0, 16);
 }
 
-export async function cacheGet(redis, key) {
-  const raw = await redis.get(key);
-  return raw != null ? JSON.parse(raw) : null;
+export function cacheGet(key) {
+  const entry = store.get(key);
+  if (!entry) return null;
+  if (entry.expiresAt && entry.expiresAt < Date.now()) {
+    store.delete(key);
+    return null;
+  }
+  return entry.value;
 }
 
-export async function cacheSet(redis, key, value, ttl = null) {
-  const payload = JSON.stringify(value);
-  if (ttl) await redis.setex(key, ttl, payload);
-  else await redis.set(key, payload);
+export function cacheSet(key, value, ttl = null) {
+  store.set(key, { value, expiresAt: ttl ? Date.now() + ttl * 1000 : null });
 }
 
 export function clipPath(videoId, t0, t1, height) {

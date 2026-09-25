@@ -11,11 +11,11 @@ Target: `/scene "Hercules Fates cutting the thread" "Me picking my fantasy footb
 
 | Constraint | Consequence |
 |---|---|
-| Discord interactions must be ACKed in **3 seconds** | Gateway process defers immediately, never does work inline |
+| Discord interactions must be ACKed in **3 seconds** | Interactions endpoint defers immediately, never does work inline |
 | Followups allowed for **15 minutes** after defer | Pipeline has plenty of headroom (~30–60s) |
 | Attachment limit **10MB** on unboosted servers | Hard ceiling on output size; drives encode settings |
 | GIF autoplays and loops on every client | GIF is the default despite being a bad format |
-| Pipeline is CPU/IO heavy, multi-user | Needs a real job queue + worker pool |
+| Pipeline is CPU/IO heavy, multi-user | Runs in-process behind a concurrency limiter, not a separate worker pool |
 | YouTube actively blocks datacenter IPs | Deploy somewhere with a residential IP |
 
 Slash command options give structured input for free. **There is no LLM query
@@ -27,26 +27,34 @@ stage compared to a CLI entrypoint.
 ## 2. Components
 
 ```
-┌─ Gateway process (1 replica) ──────────────────┐
-│  /scene handler  → defer, enqueue, store job   │
-│  button handler  → enqueue variant job         │
-│  result poster   → edit reply with attachment  │
-└────────────────────────────────────────────────┘
-                     │ Redis
-┌─ Worker pool (2–4 replicas) ───────────────────┐
-│  1. resolve   query        → video_id          │
-│  2. locate    video_id+scene → (t0, t1)        │
-│  3. extract   video_id,t0,t1 → clip.mp4        │
-│  4. render    clip+caption → out.gif           │
-│  5. deliver   upload or CDN link               │
-└────────────────────────────────────────────────┘
+┌─ Interactions endpoint (1 replica) ─────────────────────┐
+│  /scene handler   → defer, then run pipeline in-process │
+│  button handler   → defer, run variant pipeline         │
+│  result poster    → edit reply with attachment          │
+│                                                          │
+│  p-limit(3) gates concurrent pipeline runs:              │
+│    1. resolve   query          → video_id               │
+│    2. locate    video_id+scene → (t0, t1)  (embedding    │
+│                   rank offloaded to a piscina worker)    │
+│    3. extract   video_id,t0,t1 → clip.mp4                │
+│    4. render    clip+caption   → out.gif                 │
+│    5. deliver   upload or CDN link                       │
+└──────────────────────────────────────────────────────────┘
 
-Redis   — job state, resolve/locate caches, rate limits
-Disk/PV — clip cache (LRU, size-capped)
+In-process Maps — resolve/locate caches, rate limits, button session state
+Disk/PV         — clip cache (LRU, size-capped)
 ```
 
-The gateway must never call ffmpeg or yt-dlp. Blocking the Discord heartbeat
-drops the connection.
+No Redis, no external store — this is a single process, so plain in-memory
+maps cover caching, rate limiting, and session state. The tradeoff: none of it
+survives a restart. Acceptable here since a restart just means a cold resolve
+cache and any in-flight button sessions expiring early, not silent data loss.
+
+No Gateway/bot-user websocket is needed — slash commands and buttons arrive as
+HTTP POSTs. The pipeline runs in the same process behind `p-limit(3)`, which
+enforces the global download cap (§6) directly; ffmpeg/yt-dlp are still
+subprocesses, so they never block the event loop, and the ACK is sent before
+any of this runs — missing the 3-second ACK fails the interaction.
 
 ---
 
@@ -72,8 +80,10 @@ Chunk with a **sliding window of 3–5 cues, 50% overlap**. Individual VTT cues
 are 1–2s fragments — too short to embed meaningfully and too short to be clip
 boundaries. Keep `start` of the first cue and `end` of the last.
 
-Rank with MiniLM-L6-v2 embeddings (ONNX runtime, ~0.5s cold start, no GPU).
-Take the best window, expand to a natural boundary, clamp to `duration`.
+Rank with MiniLM-L6-v2 embeddings (ONNX runtime, ~0.5s cold start, no GPU),
+run in a piscina worker thread so inference never blocks the event loop that's
+answering other interactions. Take the best window, expand to a natural
+boundary, clamp to `duration`.
 
 Subtitle text does not need to be accurate — it only needs to localize.
 
@@ -165,9 +175,10 @@ stage 3 or 4 — no re-search, no re-download.
 
 ## 6. Abuse, quota, and blocking
 
-- Per-user rate limit, ~5/min, Redis token bucket.
-- **Global concurrent download cap of 2–3.** This is the one that matters —
-  parallel yt-dlp invocations are what triggers throttling.
+- Per-user rate limit, ~5/min, in-memory token bucket.
+- **Global concurrent download cap of 2–3**, enforced with `p-limit(3)` around
+  the pipeline call. This is the one that matters — parallel yt-dlp
+  invocations are what triggers throttling.
 - YouTube bot detection has been aggressive; yt-dlp may require cookies or a PO
   token. Datacenter IPs get blocked far faster than residential ones, so
   self-hosting on home infrastructure is a genuine operational advantage here,
@@ -192,12 +203,15 @@ stage 3 or 4 — no re-search, no re-download.
 
 ## 8. Stack
 
-Python. `discord.py` for the gateway, `arq` for the queue (asyncio-native,
-lighter than Celery), Redis, `onnxruntime` + MiniLM for embeddings, `yt-dlp` and
-`ffmpeg` as subprocesses.
+Node.js. `express` + `discord-interactions` for the interactions endpoint (no
+Gateway/bot-user websocket), in-process Maps for caches/rate-limit/session
+state (no Redis), `p-limit` to cap concurrent pipelines, `piscina` to run
+MiniLM embedding inference off the main thread, `@huggingface/transformers`
+(ONNX runtime) for the model itself, `yt-dlp` and `ffmpeg` as subprocesses.
 
 This does not need heavyweight orchestration. The pipeline is five sequential
-steps with retries — a queue and idempotent cache keys cover it.
+steps run in-process — a concurrency limiter and idempotent cache keys cover
+it, without a separate job queue or worker fleet.
 
 ---
 
@@ -207,7 +221,7 @@ steps with retries — a queue and idempotent cache keys cover it.
    captioned GIF out. This is where the quality bar actually lives.
 2. Stage 2 — subtitle fetch, windowing, embedding rank. Test against known scenes.
 3. Stage 1 — search and ranking heuristics.
-4. Wire the queue, then the Discord layer last.
+4. Wire the concurrency limiter, then the Discord layer last.
 
 The bot shell is the easy part. Build it last so it wraps something that already
 works.

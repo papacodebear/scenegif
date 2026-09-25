@@ -2,21 +2,21 @@ import { spawn } from 'child_process';
 import { mkdtempSync, readdirSync, readFileSync } from 'fs';
 import os from 'os';
 import path from 'path';
-import { env, pipeline } from '@huggingface/transformers';
+import Piscina from 'piscina';
 
-import { cacheGet, cacheSet, redisClient, sceneHash } from '../cache.js';
+import { cacheGet, cacheSet, sceneHash } from '../cache.js';
 import { config } from '../config.js';
-
-env.cacheDir = '/app/.cache/transformers';
 
 const WINDOW_SIZE = 4;
 const WINDOW_STEP = 2;
 
-let _extractor = null;
+const embedPool = new Piscina({
+  filename: new URL('./embed-worker.js', import.meta.url).href,
+});
 
-export async function getExtractor() {
-  if (!_extractor) _extractor = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
-  return _extractor;
+// Force the ONNX model to load before the first real request hits it.
+export async function warmupEmbedder() {
+  await embedPool.run(['warmup']);
 }
 
 function vttTime(s) {
@@ -60,10 +60,8 @@ function dot(a, b) {
 }
 
 async function rankWindows(windows, scene) {
-  const extractor = await getExtractor();
   const texts = [...windows.map(w => w.text), scene];
-  const output = await extractor(texts, { pooling: 'mean', normalize: true });
-  const embs = output.tolist();
+  const embs = await embedPool.run(texts);
   const sceneEmb = embs.at(-1);
   return windows
     .map((w, i) => ({ ...w, score: dot(embs[i], sceneEmb) }))
@@ -123,30 +121,25 @@ async function heatmapFallback(videoId) {
 
 export async function locate(videoId, scene) {
   const key = `locate:${sceneHash(videoId, scene)}`;
-  const redis = redisClient();
-  try {
-    const cached = await cacheGet(redis, key);
-    if (cached) {
-      const [t0, t1, rawWindows] = cached;
-      return [t0, t1, rawWindows.map(w => [w[0], w[1]])];
-    }
-
-    const vtt = await fetchSubtitles(videoId);
-    const cues = vtt ? parseVtt(vtt) : [];
-
-    let windows, t0, t1;
-    if (cues.length) {
-      const ranked = await rankWindows(makeWindows(cues), scene);
-      windows = ranked.map(w => [w.start, w.end]);
-      [t0, t1] = windows[0];
-    } else {
-      [t0, t1] = await heatmapFallback(videoId);
-      windows = [[t0, t1]];
-    }
-
-    await cacheSet(redis, key, [t0, t1, windows]);
-    return [t0, t1, windows];
-  } finally {
-    redis.disconnect();
+  const cached = cacheGet(key);
+  if (cached) {
+    const [t0, t1, rawWindows] = cached;
+    return [t0, t1, rawWindows.map(w => [w[0], w[1]])];
   }
+
+  const vtt = await fetchSubtitles(videoId);
+  const cues = vtt ? parseVtt(vtt) : [];
+
+  let windows, t0, t1;
+  if (cues.length) {
+    const ranked = await rankWindows(makeWindows(cues), scene);
+    windows = ranked.map(w => [w.start, w.end]);
+    [t0, t1] = windows[0];
+  } else {
+    [t0, t1] = await heatmapFallback(videoId);
+    windows = [[t0, t1]];
+  }
+
+  cacheSet(key, [t0, t1, windows]);
+  return [t0, t1, windows];
 }

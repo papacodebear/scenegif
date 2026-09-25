@@ -6,16 +6,22 @@ import {
   InteractionType,
   verifyKeyMiddleware,
 } from 'discord-interactions';
-import { Queue } from 'bullmq';
 import express from 'express';
-import { Redis } from 'ioredis';
+import pLimit from 'p-limit';
 
-import { redisConnection } from './cache.js';
 import { config } from './config.js';
+import { warmupEmbedder } from './pipeline/locate.js';
+import { checkRateLimit } from './rate-limit.js';
+import { getSession } from './session-store.js';
+import { runGif } from './run-gif.js';
 
 const app = express();
-const queue = new Queue('scenegif', { connection: redisConnection() });
-const redis = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
+
+// Caps concurrent yt-dlp/ffmpeg pipelines to avoid YouTube's datacenter throttling.
+const limit = pLimit(3);
+function enqueue(jobData) {
+  limit(() => runGif(jobData)).catch(err => console.error('runGif failed:', err));
+}
 
 const PORT = process.env.PORT || 3000;
 
@@ -32,14 +38,14 @@ app.post('/interactions', verifyKeyMiddleware(config.discordPublicKey), async (r
     const options = Object.fromEntries((data.options || []).map(o => [o.name, o.value]));
     const userId = BigInt((member?.user ?? user).id);
 
-    if (!await checkRateLimit(userId)) {
+    if (!checkRateLimit(userId)) {
       return res.json({
         type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
         data: { content: "You're going too fast. Try again in a moment.", flags: InteractionResponseFlags.EPHEMERAL },
       });
     }
 
-    await queue.add('run_gif', {
+    enqueue({
       scene: options.scene,
       caption: options.caption ?? null,
       token,
@@ -60,19 +66,18 @@ app.post('/interactions', verifyKeyMiddleware(config.discordPublicKey), async (r
     const t0 = parseFloat(t0Str);
     const t1 = parseFloat(t1Str);
 
-    const raw = await redis.get(`session:${sessionKey}`);
-    if (!raw) {
+    const session = getSession(sessionKey);
+    if (!session) {
       return res.json({
         type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
         data: { content: 'Session expired. Run /scene again.', flags: InteractionResponseFlags.EPHEMERAL },
       });
     }
 
-    const session = JSON.parse(raw);
     const { scene, caption, windowIdx } = session;
 
     if (action === 'post') {
-      await queue.add('run_gif', { scene, caption, token, channelId: channel_id, videoId, t0, t1, windowIdx });
+      enqueue({ scene, caption, token, channelId: channel_id, videoId, t0, t1, windowIdx });
       return res.json({ type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
     }
 
@@ -80,7 +85,7 @@ app.post('/interactions', verifyKeyMiddleware(config.discordPublicKey), async (r
     const jobData = { scene, caption, token, channelId: channel_id, videoId, windowIdx: newWinIdx };
     if (action !== 'next') Object.assign(jobData, { t0: newT0, t1: newT1 });
 
-    await queue.add('run_gif', jobData);
+    enqueue(jobData);
     return res.json({ type: InteractionResponseType.DEFERRED_UPDATE_MESSAGE });
   }
 
@@ -97,11 +102,5 @@ function applyAction(action, t0, t1, winIdx) {
   return [t0, t1, winIdx];
 }
 
-async function checkRateLimit(userId) {
-  const key = `rl:${userId}`;
-  const count = await redis.incr(key);
-  if (count === 1) await redis.expire(key, 60);
-  return count <= config.rateLimitPerMin;
-}
-
-app.listen(PORT, () => console.log(`Gateway listening on :${PORT}`));
+await warmupEmbedder();
+app.listen(PORT, () => console.log(`Listening on :${PORT}`));

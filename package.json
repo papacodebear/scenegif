@@ -4,18 +4,17 @@
   "type": "module",
   "engines": { "node": "24.x" },
   "scripts": {
-    "start": "node src/gateway.js",
-    "worker": "node src/worker.js",
+    "start": "node src/app.js",
     "register": "node src/register.js",
-    "dev": "nodemon src/gateway.js"
+    "dev": "nodemon src/app.js"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.5.0",
-    "bullmq": "^5.0.0",
     "discord-interactions": "^4.4.0",
     "dotenv": "^17.0.0",
     "express": "^5.2.0",
-    "ioredis": "^5.4.0"
+    "p-limit": "^7.3.3",
+    "piscina": "^5.3.2"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"

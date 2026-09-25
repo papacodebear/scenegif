@@ -1,10 +1,10 @@
 services:
-  gateway:
+  app:
     build:
       context: .
       args:
         GIT_SHA: "${GIT_SHA:-unknown}"
-    container_name: scenegif-gateway
+    container_name: scenegif
     restart: unless-stopped
     env_file: .env
     networks:

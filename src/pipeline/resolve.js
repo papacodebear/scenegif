@@ -1,6 +1,6 @@
 import { spawn } from 'child_process';
 
-import { cacheGet, cacheSet, redisClient, sceneHash } from '../cache.js';
+import { cacheGet, cacheSet, sceneHash } from '../cache.js';
 import { config } from '../config.js';
 import { NoResultsError } from '../errors.js';
 
@@ -55,23 +55,18 @@ async function search(scene) {
 
 export async function resolve(scene) {
   const key = `resolve:${sceneHash(scene)}`;
-  const redis = redisClient();
-  try {
-    const cached = await cacheGet(redis, key);
-    if (cached) return cached;
+  const cached = cacheGet(key);
+  if (cached) return cached;
 
-    const results = await search(scene);
-    const eligible = results.filter(r => (r.duration || 0) > 0 && (r.duration || 0) <= MAX_DURATION);
+  const results = await search(scene);
+  const eligible = results.filter(r => (r.duration || 0) > 0 && (r.duration || 0) <= MAX_DURATION);
 
-    if (!eligible.length) {
-      if (results.length) throw new NoResultsError("Found clips, but they're all too long. Try a more specific scene description.");
-      throw new NoResultsError("Couldn't find a clip for that scene.");
-    }
-
-    const best = eligible.reduce((a, b) => rank(a, scene) >= rank(b, scene) ? a : b);
-    await cacheSet(redis, key, best.id, 30 * 24 * 3600);
-    return best.id;
-  } finally {
-    redis.disconnect();
+  if (!eligible.length) {
+    if (results.length) throw new NoResultsError("Found clips, but they're all too long. Try a more specific scene description.");
+    throw new NoResultsError("Couldn't find a clip for that scene.");
   }
+
+  const best = eligible.reduce((a, b) => rank(a, scene) >= rank(b, scene) ? a : b);
+  cacheSet(key, best.id, 30 * 24 * 3600);
+  return best.id;
 }

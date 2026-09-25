@@ -1,15 +1,12 @@
 import { randomBytes } from 'crypto';
-import { Worker } from 'bullmq';
 
-import { redisConnection } from './cache.js';
 import { config } from './config.js';
 import { SceneGifError } from './errors.js';
-import { getExtractor } from './pipeline/locate.js';
 import { extract } from './pipeline/extract.js';
 import { locate } from './pipeline/locate.js';
 import { render } from './pipeline/render.js';
 import { resolve } from './pipeline/resolve.js';
-import { Redis } from 'ioredis';
+import { setSession } from './session-store.js';
 
 const ATTACH_LIMIT = 10 * 1024 * 1024;
 
@@ -70,11 +67,10 @@ async function postError(token, message) {
   });
 }
 
-async function runGif(job) {
-  const { scene, caption, token, channelId, windowIdx = 0 } = job.data;
-  let { videoId = null, t0 = null, t1 = null } = job.data;
+export async function runGif(jobData) {
+  const { scene, caption, token, channelId, windowIdx = 0 } = jobData;
+  let { videoId = null, t0 = null, t1 = null } = jobData;
 
-  const redis = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
   try {
     if (!videoId) videoId = await resolve(scene);
 
@@ -90,7 +86,7 @@ async function runGif(job) {
     const gif = await render(clip, caption ?? null, t0, t1);
 
     const sessionKey = randomBytes(8).toString('hex');
-    await redis.setex(`session:${sessionKey}`, 900, JSON.stringify({ scene, caption, windowIdx }));
+    setSession(sessionKey, { scene, caption, windowIdx }, 900);
 
     const winCount = allWindows?.length ?? 1;
     await postGif(token, gif, videoId, t0, t1, sessionKey, winCount);
@@ -98,13 +94,5 @@ async function runGif(job) {
     const msg = err instanceof SceneGifError ? err.userMessage : 'Something went wrong. Please try again.';
     if (!(err instanceof SceneGifError)) console.error('Unexpected error in runGif:', err);
     await postError(token, msg);
-  } finally {
-    redis.disconnect();
   }
 }
-
-await getExtractor(); // pre-load before accepting jobs
-
-const worker = new Worker('scenegif', runGif, { connection: redisConnection() });
-worker.on('failed', (job, err) => console.error(`Job ${job?.id} failed:`, err.message));
-console.log('Worker ready');
