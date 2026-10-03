@@ -4,19 +4,46 @@ import { config } from './config.js';
 import { SceneGifError } from './errors.js';
 import { extract } from './pipeline/extract.js';
 import { locate } from './pipeline/locate.js';
-import { render } from './pipeline/render.js';
+import { MAX_GIF_SECONDS, render } from './pipeline/render.js';
 import { resolve } from './pipeline/resolve.js';
 import { setSession } from './session-store.js';
+import { formatTime } from './timecode.js';
 
 const ATTACH_LIMIT = 10 * 1024 * 1024;
+const SESSION_TTL = 900;
 
-function cid(action, videoId, t0, t1, sessionKey) {
+export function cid(action, videoId, t0, t1, sessionKey) {
   return `sg:${action}:${videoId}:${t0.toFixed(2)}:${t1.toFixed(2)}:${sessionKey}`;
 }
 
-function buildComponents(videoId, t0, t1, sessionKey, winCount) {
-  const c = action => cid(action, videoId, t0, t1, sessionKey);
-  return [
+function truncate(text, max) {
+  return text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`;
+}
+
+function escapeMd(text) {
+  return text.replace(/[\\*_~`|>[\]]/g, '\\$&');
+}
+
+function buildContent(source, t0, t1, windowIdx, isPublic) {
+  const url = `https://youtu.be/${source.videoId}?t=${Math.floor(t0)}`;
+  const link = `🎬 [${escapeMd(source.title)}](<${url}>)`;
+  if (isPublic) return `-# ${link}`;
+
+  const parts = [`${formatTime(t0)} → ${formatTime(t0 + Math.min(t1 - t0, MAX_GIF_SECONDS))}`];
+  const match = windowIdx == null ? null : source.windows[windowIdx];
+  if (!match) {
+    parts.push('custom start');
+  } else {
+    const exact = Math.abs(match.start - t0) < 0.01 && Math.abs(match.end - t1) < 0.01;
+    parts.push(`match ${windowIdx + 1} of ${source.windows.length}${exact ? '' : ' (nudged)'}`);
+    if (match.text) parts.push(`“${escapeMd(truncate(match.text, 80))}”`);
+  }
+  return `${link}\n${parts.join(' · ')}`;
+}
+
+function buildComponents(source, t0, t1, sessionKey) {
+  const c = action => cid(action, source.videoId, t0, t1, sessionKey);
+  const rows = [
     {
       type: 1,
       components: [
@@ -29,31 +56,49 @@ function buildComponents(videoId, t0, t1, sessionKey, winCount) {
     {
       type: 1,
       components: [
-        { type: 2, style: 2, label: '↻ next match', custom_id: c('next'), disabled: winCount <= 1 },
+        { type: 2, style: 2, label: '⏱ set start…', custom_id: c('start') },
         { type: 2, style: 1, label: '📤 post', custom_id: c('post') },
       ],
     },
   ];
+  if (source.windows.length > 1) {
+    rows.push({
+      type: 1,
+      components: [{
+        type: 3,
+        custom_id: c('pick'),
+        placeholder: `Jump to another match (${source.windows.length} found)`,
+        options: source.windows.map((w, i) => ({
+          label: `#${i + 1} · ${formatTime(w.start)}`,
+          value: String(i),
+          ...(w.text && { description: truncate(w.text, 100) }),
+        })),
+      }],
+    });
+  }
+  return rows;
 }
 
-async function postGif(token, gifBytes, videoId, t0, t1, sessionKey, winCount) {
-  const components = buildComponents(videoId, t0, t1, sessionKey, winCount);
+async function postGif(token, gifBytes, content, components) {
   const url = `${config.discordApiBase}/webhooks/${config.discordAppId}/${token}/messages/@original`;
 
-  const form = new FormData();
-  form.append('payload_json', JSON.stringify({
-    components,
-    attachments: [{ id: 0, filename: 'scene.gif' }],
-  }));
-
   if (gifBytes.length <= ATTACH_LIMIT) {
+    const form = new FormData();
+    form.append('payload_json', JSON.stringify({
+      content,
+      components,
+      attachments: [{ id: 0, filename: 'scene.gif' }],
+    }));
     form.append('files[0]', new Blob([gifBytes], { type: 'image/gif' }), 'scene.gif');
     await fetch(url, { method: 'PATCH', body: form });
   } else {
     await fetch(url, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: '⚠️ GIF exceeded file size limit. Try a shorter duration.' }),
+      body: JSON.stringify({
+        content: `${content}\n⚠️ GIF exceeded file size limit. Try a shorter duration.`,
+        components,
+      }),
     });
   }
 }
@@ -67,29 +112,32 @@ async function postError(token, message) {
   });
 }
 
+async function findSource(scene) {
+  const video = await resolve(scene);
+  const windows = await locate(video.id, scene);
+  return { videoId: video.id, title: video.title, duration: video.duration, windows };
+}
+
 export async function runGif(jobData) {
-  const { scene, caption, token, channelId, windowIdx = 0 } = jobData;
-  let { videoId = null, t0 = null, t1 = null } = jobData;
+  const { scene, caption, token, isPublic = false } = jobData;
+  let { source = null, t0 = null, t1 = null, windowIdx = 0, sessionKey = null } = jobData;
 
   try {
-    if (!videoId) videoId = await resolve(scene);
-
-    let allWindows = null;
+    source ??= await findSource(scene);
     if (t0 == null || t1 == null) {
-      let windows;
-      [t0, t1, windows] = await locate(videoId, scene);
-      allWindows = windows;
-      if (windowIdx > 0 && windows.length > windowIdx) [t0, t1] = windows[windowIdx];
+      if (!source.windows[windowIdx]) windowIdx = 0;
+      ({ start: t0, end: t1 } = source.windows[windowIdx]);
     }
 
-    const clip = await extract(videoId, t0, t1);
+    const clip = await extract(source.videoId, t0, t1);
     const gif = await render(clip, caption ?? null, t0, t1);
 
-    const sessionKey = randomBytes(8).toString('hex');
-    setSession(sessionKey, { scene, caption, windowIdx }, 900);
+    sessionKey ??= randomBytes(8).toString('hex');
+    if (!isPublic) setSession(sessionKey, { scene, caption, source, windowIdx }, SESSION_TTL);
 
-    const winCount = allWindows?.length ?? 1;
-    await postGif(token, gif, videoId, t0, t1, sessionKey, winCount);
+    const content = buildContent(source, t0, t1, windowIdx, isPublic);
+    const components = isPublic ? [] : buildComponents(source, t0, t1, sessionKey);
+    await postGif(token, gif, content, components);
   } catch (err) {
     const msg = err instanceof SceneGifError ? err.userMessage : 'Something went wrong. Please try again.';
     if (!(err instanceof SceneGifError)) console.error('Unexpected error in runGif:', err);

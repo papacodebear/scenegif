@@ -9,6 +9,7 @@ import { config } from '../config.js';
 
 const WINDOW_SIZE = 4;
 const WINDOW_STEP = 2;
+const MAX_MATCHES = 10;
 
 const embedPool = new Piscina({
   filename: new URL('./embed-worker.js', import.meta.url).href,
@@ -68,6 +69,17 @@ async function rankWindows(windows, scene) {
     .sort((a, b) => b.score - a.score);
 }
 
+// Windows overlap by construction; keep only the best-ranked one from each overlapping cluster.
+function distinctMatches(ranked) {
+  const kept = [];
+  for (const w of ranked) {
+    if (kept.some(k => w.start < k.end && k.start < w.end)) continue;
+    kept.push({ start: w.start, end: w.end, text: w.text });
+    if (kept.length === MAX_MATCHES) break;
+  }
+  return kept;
+}
+
 async function fetchSubtitles(videoId) {
   const tmp = mkdtempSync(path.join(os.tmpdir(), 'scenegif-'));
   const args = [
@@ -119,27 +131,23 @@ async function heatmapFallback(videoId) {
   }
 }
 
+// Returns ranked, non-overlapping matches as { start, end, text }; text is null without subtitles.
 export async function locate(videoId, scene) {
   const key = `locate:${sceneHash(videoId, scene)}`;
   const cached = cacheGet(key);
-  if (cached) {
-    const [t0, t1, rawWindows] = cached;
-    return [t0, t1, rawWindows.map(w => [w[0], w[1]])];
-  }
+  if (cached) return cached;
 
   const vtt = await fetchSubtitles(videoId);
   const cues = vtt ? parseVtt(vtt) : [];
 
-  let windows, t0, t1;
+  let windows;
   if (cues.length) {
-    const ranked = await rankWindows(makeWindows(cues), scene);
-    windows = ranked.map(w => [w.start, w.end]);
-    [t0, t1] = windows[0];
+    windows = distinctMatches(await rankWindows(makeWindows(cues), scene));
   } else {
-    [t0, t1] = await heatmapFallback(videoId);
-    windows = [[t0, t1]];
+    const [start, end] = await heatmapFallback(videoId);
+    windows = [{ start, end, text: null }];
   }
 
-  cacheSet(key, [t0, t1, windows]);
-  return [t0, t1, windows];
+  cacheSet(key, windows);
+  return windows;
 }

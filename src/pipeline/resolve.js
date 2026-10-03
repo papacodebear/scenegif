@@ -67,6 +67,7 @@ export async function resolve(scene) {
   }
 
   const best = eligible.reduce((a, b) => rank(a, scene) >= rank(b, scene) ? a : b);
-  cacheSet(key, best.id, 30 * 24 * 3600);
-  return best.id;
+  const video = { id: best.id, title: best.title || 'YouTube video', duration: best.duration || null };
+  cacheSet(key, video, 30 * 24 * 3600);
+  return video;
 }

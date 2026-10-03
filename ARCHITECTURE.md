@@ -159,17 +159,25 @@ good.
 `scene` is the only required Discord named option; `caption` is optional, presented second in order.
 
 Reply **ephemeral** first with buttons. Channel spam from bad cuts is the main
-UX failure mode, so the user previews before posting.
+UX failure mode, so the user previews before posting. The preview's text links
+the source video at the chosen timestamp and shows which match it is.
 
 ```
-[◀ -1s] [+1s ▶] [− shorter] [+ longer] [↻ next match] [📤 post]
+🎬 Video title (linked to youtu.be/ID?t=123)
+2:03 → 2:07 · match 1 of 5 · "matched subtitle text"
+[◀ -1s] [+1s ▶] [− shorter] [+ longer]
+[⏱ set start…] [📤 post]
+[Jump to another match ▾]
 ```
 
 Buttons are the Discord equivalent of conversational re-cutting. Encode
 `(video_id, t0, t1, caption_id)` in `custom_id` so variant jobs skip straight to
 stage 3 or 4 — no re-search, no re-download.
 
-`↻ next match` walks down the ranked window list from stage 2, cached.
+The match menu lists up to 10 non-overlapping windows from stage 2, kept in the
+session so picking one skips re-ranking. `⏱ set start…` opens a modal for an
+exact start time and length. The posted message carries only the GIF and a
+source link, with no controls.
 
 ---
 

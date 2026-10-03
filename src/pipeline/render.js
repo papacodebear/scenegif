@@ -7,6 +7,7 @@ import { RenderError } from '../errors.js';
 
 const SIZE_LIMIT = 8 * 1024 * 1024;
 const PROFILES = [[12, 480], [10, 480], [8, 480], [8, 400], [8, 360], [8, 320]];
+export const MAX_GIF_SECONDS = 4.0;
 const DURATION_STEPS = [4.0, 3.5, 3.0, 2.5];
 
 function assTime(seconds) {
@@ -60,7 +61,7 @@ async function encode(clipPath, caption, duration, fps, width) {
   return readFileSync(outPath);
 }
 
-export async function render(clipPath, caption, t0, t1, maxDuration = 4.0) {
+export async function render(clipPath, caption, t0, t1, maxDuration = MAX_GIF_SECONDS) {
   const duration = Math.min(t1 - t0, maxDuration);
   let gif;
 
