@@ -44,9 +44,10 @@ async function encode(clipPath, caption, duration, fps, width) {
     writeFileSync(assPath, buildAss(caption, duration), 'utf8');
     vf += `,ass=${assPath}`;
   }
-  vf += ',split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=3';
+  vf += ',split[a][b];[a]palettegen=stats_mode=diff:reserve_transparent=0[p];[b][p]paletteuse=dither=bayer:bayer_scale=3';
 
-  const args = ['-y', '-i', clipPath, '-t', String(duration), '-vf', vf, '-loop', '0', outPath];
+  // Full opaque frames: transdiff/offset frames can leave Discord mobile stuck on the blurred placeholder.
+  const args = ['-y', '-i', clipPath, '-t', String(duration), '-vf', vf, '-gifflags', '-offsetting-transdiff', '-loop', '0', outPath];
 
   await new Promise((resolve, reject) => {
     const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
