@@ -161,8 +161,8 @@ export async function runGif(jobData) {
       ({ start: t0, end: t1 } = source.windows[windowIdx]);
     }
 
-    const clip = await extract(source.videoId, t0, t1);
-    const gif = await render(clip, caption ?? null, t0, t1);
+    const clipFile = await extract(source.videoId, t0, t1);
+    const gif = await render(clipFile, caption ?? null, t0, t1);
 
     sessionKey ??= randomBytes(8).toString('hex');
     if (!isPublic) setSession(sessionKey, { scene, caption, source, windowIdx }, SESSION_TTL);
