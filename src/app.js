@@ -74,7 +74,10 @@ app.post('/interactions', verifyKeyMiddleware(config.discordPublicKey), async (r
 
     if (action === 'post') {
       enqueue({ ...job, t0, t1, windowIdx, isPublic: true });
-      return res.json({ type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
+      return res.json({
+        type: InteractionResponseType.UPDATE_MESSAGE,
+        data: { content: '📤 Posting…', components: [], attachments: [] },
+      });
     }
 
     if (action === 'start') return res.json(startModal(videoId, t0, t1, sessionKey));

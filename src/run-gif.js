@@ -95,18 +95,26 @@ function buildComponents(source, t0, t1, sessionKey) {
   return rows;
 }
 
+function webhookUrl(token, suffix = '') {
+  return `${config.discordApiBase}/webhooks/${config.discordAppId}/${token}${suffix}`;
+}
+
+function gifForm(gifBytes, content, components) {
+  const form = new FormData();
+  form.append('payload_json', JSON.stringify({
+    content,
+    components,
+    attachments: [{ id: 0, filename: 'scene.gif' }],
+  }));
+  form.append('files[0]', new Blob([gifBytes], { type: 'image/gif' }), 'scene.gif');
+  return form;
+}
+
 async function postGif(token, gifBytes, content, components) {
-  const url = `${config.discordApiBase}/webhooks/${config.discordAppId}/${token}/messages/@original`;
+  const url = webhookUrl(token, '/messages/@original');
 
   if (gifBytes.length <= ATTACH_LIMIT) {
-    const form = new FormData();
-    form.append('payload_json', JSON.stringify({
-      content,
-      components,
-      attachments: [{ id: 0, filename: 'scene.gif' }],
-    }));
-    form.append('files[0]', new Blob([gifBytes], { type: 'image/gif' }), 'scene.gif');
-    await fetch(url, { method: 'PATCH', body: form });
+    await fetch(url, { method: 'PATCH', body: gifForm(gifBytes, content, components) });
   } else {
     await fetch(url, {
       method: 'PATCH',
@@ -119,9 +127,16 @@ async function postGif(token, gifBytes, content, components) {
   }
 }
 
+// Posts the GIF as a public followup, then deletes the ephemeral preview it was posted from.
+async function postPublic(token, gifBytes, content) {
+  if (gifBytes.length > ATTACH_LIMIT) throw new SceneGifError('GIF exceeded the file size limit. Try a shorter duration.');
+  const res = await fetch(webhookUrl(token), { method: 'POST', body: gifForm(gifBytes, content, []) });
+  if (!res.ok) throw new Error(`Public followup failed: ${res.status} ${await res.text()}`);
+  await fetch(webhookUrl(token, '/messages/@original'), { method: 'DELETE' });
+}
+
 async function postError(token, message) {
-  const url = `${config.discordApiBase}/webhooks/${config.discordAppId}/${token}/messages/@original`;
-  await fetch(url, {
+  await fetch(webhookUrl(token, '/messages/@original'), {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content: `❌ ${message}` }),
@@ -168,8 +183,8 @@ export async function runGif(jobData) {
     if (!isPublic) setSession(sessionKey, { scene, caption, source, windowIdx }, SESSION_TTL);
 
     const content = buildContent(source, t0, t1, windowIdx, isPublic);
-    const components = isPublic ? [] : buildComponents(source, t0, t1, sessionKey);
-    await postGif(token, gif, content, components);
+    if (isPublic) await postPublic(token, gif, content);
+    else await postGif(token, gif, content, buildComponents(source, t0, t1, sessionKey));
   } catch (err) {
     const msg = err instanceof SceneGifError ? err.userMessage : 'Something went wrong. Please try again.';
     if (!(err instanceof SceneGifError)) console.error('Unexpected error in runGif:', err);
