@@ -5,7 +5,7 @@ import { SceneGifError } from './errors.js';
 import { extract } from './pipeline/extract.js';
 import { locate } from './pipeline/locate.js';
 import { MAX_GIF_SECONDS, render } from './pipeline/render.js';
-import { resolve } from './pipeline/resolve.js';
+import { resolve, videoInfo } from './pipeline/resolve.js';
 import { setSession } from './session-store.js';
 import { formatTime } from './timecode.js';
 
@@ -32,11 +32,11 @@ function buildContent(source, t0, t1, windowIdx, isPublic) {
   const parts = [`${formatTime(t0)} → ${formatTime(t0 + Math.min(t1 - t0, MAX_GIF_SECONDS))}`];
   const match = windowIdx == null ? null : source.windows[windowIdx];
   if (!match) {
-    parts.push('custom start');
+    if (source.windows.length) parts.push('custom start');
   } else {
     const exact = Math.abs(match.start - t0) < 0.01 && Math.abs(match.end - t1) < 0.01;
     parts.push(`match ${windowIdx + 1} of ${source.windows.length}${exact ? '' : ' (nudged)'}`);
-    if (match.text) parts.push(`“${escapeMd(truncate(match.text, 80))}”`);
+    parts.push(match.text ? `“${escapeMd(truncate(match.text, 80))}”` : 'no subtitles, best guess');
   }
   return `${link}\n${parts.join(' · ')}`;
 }
@@ -72,6 +72,22 @@ function buildComponents(source, t0, t1, sessionKey) {
           label: `#${i + 1} · ${formatTime(w.start)}`,
           value: String(i),
           ...(w.text && { description: truncate(w.text, 100) }),
+        })),
+      }],
+    });
+  }
+  if (source.videos.length > 1) {
+    rows.push({
+      type: 1,
+      components: [{
+        type: 3,
+        custom_id: c('video'),
+        placeholder: `Wrong video? Try another (${source.videos.length} found)`,
+        options: source.videos.map((v, i) => ({
+          label: truncate(`${i + 1}. ${v.title}`, 100),
+          value: String(i),
+          default: i === source.videoIdx,
+          ...(v.duration && { description: formatTime(v.duration) }),
         })),
       }],
     });
@@ -112,18 +128,34 @@ async function postError(token, message) {
   });
 }
 
-async function findSource(scene) {
-  const video = await resolve(scene);
+async function findSource(scene, videoIdx = 0, videos = null) {
+  videos ??= await resolve(scene);
+  if (!videos[videoIdx]) videoIdx = 0;
+  const video = videos[videoIdx];
   const windows = await locate(video.id, scene);
-  return { videoId: video.id, title: video.title, duration: video.duration, windows };
+  return { videoId: video.id, title: video.title, duration: video.duration, windows, videos, videoIdx };
+}
+
+// Builds a source for an explicit /clip link, skipping search and locate entirely.
+async function clipSource({ videoId, t0, t1 }) {
+  const video = await videoInfo(videoId);
+  if (video.duration && t0 >= video.duration) {
+    throw new SceneGifError(`That's past the end of the video (${formatTime(video.duration)}).`);
+  }
+  const source = { videoId, title: video.title, duration: video.duration, windows: [], videos: [], videoIdx: 0 };
+  return { source, t0, t1: video.duration ? Math.min(t1, video.duration) : t1 };
 }
 
 export async function runGif(jobData) {
-  const { scene, caption, token, isPublic = false } = jobData;
+  const { scene, caption, token, clip, videoIdx, videos, isPublic = false } = jobData;
   let { source = null, t0 = null, t1 = null, windowIdx = 0, sessionKey = null } = jobData;
 
   try {
-    source ??= await findSource(scene);
+    if (clip) {
+      ({ source, t0, t1 } = await clipSource(clip));
+      windowIdx = null;
+    }
+    source ??= await findSource(scene, videoIdx, videos);
     if (t0 == null || t1 == null) {
       if (!source.windows[windowIdx]) windowIdx = 0;
       ({ start: t0, end: t1 } = source.windows[windowIdx]);

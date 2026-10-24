@@ -62,34 +62,38 @@ any of this runs — missing the 3-second ACK fails the interaction.
 
 ### Stage 1 — resolve
 
-Search for the **clip**, not the film. `ytsearch5:"<scene>"` returns 90-second
+Search for the **clip**, not the film. `ytsearch8:"<scene>"` returns 90-second
 uploads where the target moment is most of the runtime, which collapses the
 localization problem.
 
-Rank results by: duration under ~5 min (strong bonus), title term overlap,
-view count as a weak tiebreaker. Reject anything over 20 minutes.
+Rank results by: YouTube's own result order (strongest signal), stopword-free
+title term overlap, duration under ~5 min, view count as a weak tiebreaker.
+Reject anything over 20 minutes. All eligible results are kept so the preview
+can offer a "wrong video?" picker.
 
-Cache: `hash(normalized_scene)` → `video_id`, TTL 30 days.
+Cache: `hash(normalized_scene)` → ranked video list, TTL 30 days.
 
 ### Stage 2 — locate
 
-`yt-dlp --write-auto-sub --sub-format vtt --skip-download` — subtitles only, no
-video yet.
+One `yt-dlp --write-subs --write-auto-subs --write-info-json --skip-download`
+call fetches subtitles (uploaded preferred over ASR) plus the info JSON, which
+carries duration and the most-replayed heatmap.
 
-Chunk with a **sliding window of 3–5 cues, 50% overlap**. Individual VTT cues
-are 1–2s fragments — too short to embed meaningfully and too short to be clip
-boundaries. Keep `start` of the first cue and `end` of the last.
+YouTube auto-captions **roll**: each cue repeats the previous line, with 10ms
+filler cues between. The parser keeps only the newly spoken last line of each
+cue and trims cue ends to the word timestamps.
 
-Rank with MiniLM-L6-v2 embeddings (ONNX runtime, ~0.5s cold start, no GPU),
-run in a piscina worker thread so inference never blocks the event loop that's
-answering other interactions. Take the best window, expand to a natural
-boundary, clamp to `duration`.
+Each cue is a candidate anchor, scored on its own text and with neighbouring
+cues as context: MiniLM-L6-v2 similarity (ONNX, in a piscina worker), keyword
+overlap, and a small heatmap bonus. The scene is also scored with words from
+the video title removed, since "Hercules" identifies the clip, not the moment.
+The GIF starts 0.5s before the anchor cue, so the matched line is on screen.
 
 Subtitle text does not need to be accurate — it only needs to localize.
 
-Fallbacks when no subs exist: most-replayed heatmap from yt-dlp JSON, then
-"start at 15% of runtime" as a last resort. Visual/CLIP search is **out of
-scope for v1**.
+Top heatmap peaks are added as low-scored candidates; with no subs they are the
+only candidates, then "start at 15% of runtime" as a last resort. Visual/CLIP
+search is **out of scope for v1**.
 
 Cache: `hash(video_id + scene)` → `(t0, t1)`, no expiry.
 
@@ -158,6 +162,13 @@ good.
 
 `scene` is the only required Discord named option; `caption` is optional, presented second in order.
 
+```
+/clip <url> [start] [end] [caption]
+```
+
+Escape hatch when search picks the wrong video or moment: skips resolve and
+locate entirely. `start` defaults to the link's `?t=`, `end` to start + 4s.
+
 Reply **ephemeral** first with buttons. Channel spam from bad cuts is the main
 UX failure mode, so the user previews before posting. The preview's text links
 the source video at the chosen timestamp and shows which match it is.
@@ -168,6 +179,7 @@ the source video at the chosen timestamp and shows which match it is.
 [◀ -1s] [+1s ▶] [− shorter] [+ longer]
 [⏱ set start…] [📤 post]
 [Jump to another match ▾]
+[Wrong video? Try another ▾]
 ```
 
 Buttons are the Discord equivalent of conversational re-cutting. Encode

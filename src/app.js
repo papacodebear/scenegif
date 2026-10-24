@@ -16,6 +16,7 @@ import { checkRateLimit } from './rate-limit.js';
 import { cid, runGif } from './run-gif.js';
 import { getSession } from './session-store.js';
 import { formatTime, parseTime } from './timecode.js';
+import { parseYouTubeUrl } from './youtube-url.js';
 
 const app = express();
 
@@ -36,24 +37,19 @@ app.post('/interactions', verifyKeyMiddleware(config.discordPublicKey), async (r
     return res.json({ type: InteractionResponseType.PONG });
   }
 
-  if (type === InteractionType.APPLICATION_COMMAND && data.name === 'scene') {
+  if (type === InteractionType.APPLICATION_COMMAND && (data.name === 'scene' || data.name === 'clip')) {
     const options = Object.fromEntries((data.options || []).map(o => [o.name, o.value]));
     const userId = BigInt((member?.user ?? user).id);
 
-    if (!checkRateLimit(userId)) {
-      return res.json({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: { content: "You're going too fast. Try again in a moment.", flags: InteractionResponseFlags.EPHEMERAL },
-      });
-    }
+    if (!checkRateLimit(userId)) return res.json(ephemeral("You're going too fast. Try again in a moment."));
 
-    enqueue({
-      scene: options.scene,
-      caption: options.caption ?? null,
-      token,
-      channelId: channel_id,
-      windowIdx: 0,
-    });
+    const job = { scene: options.scene ?? null, caption: options.caption ?? null, token, channelId: channel_id, windowIdx: 0 };
+    if (data.name === 'clip') {
+      const clip = readClipOptions(options);
+      if (clip.error) return res.json(ephemeral(clip.error));
+      job.clip = clip;
+    }
+    enqueue(job);
 
     return res.json({
       type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
@@ -70,7 +66,7 @@ app.post('/interactions', verifyKeyMiddleware(config.discordPublicKey), async (r
     let t1 = parseFloat(t1Str);
 
     const session = getSession(sessionKey);
-    if (!session) return res.json(ephemeral('Session expired. Run /scene again.'));
+    if (!session) return res.json(ephemeral('Session expired. Run the command again.'));
 
     const { scene, caption, source } = session;
     let { windowIdx } = session;
@@ -88,6 +84,11 @@ app.post('/interactions', verifyKeyMiddleware(config.discordPublicKey), async (r
       if (result.error) return res.json(ephemeral(result.error));
       [t0, t1] = result.range;
       windowIdx = null;
+    } else if (action === 'video') {
+      const videoIdx = parseInt(data.values?.[0], 10);
+      if (!source.videos[videoIdx]) return res.sendStatus(400);
+      enqueue({ ...job, source: null, videos: source.videos, videoIdx, windowIdx: 0 });
+      return res.json({ type: InteractionResponseType.DEFERRED_UPDATE_MESSAGE });
     } else if (action === 'pick') {
       windowIdx = parseInt(data.values?.[0], 10);
       const match = source.windows[windowIdx];
@@ -149,6 +150,19 @@ function readStartModal(data, t0, t1, videoDuration) {
   let end = start + Math.min(length, MAX_GIF_SECONDS);
   if (videoDuration) end = Math.min(end, videoDuration);
   return { range: [start, end] };
+}
+
+function readClipOptions({ url, start, end }) {
+  const link = parseYouTubeUrl(url ?? '');
+  if (!link) return { error: "That doesn't look like a YouTube link." };
+
+  const t0 = start ? parseTime(start) : (link.t ?? 0);
+  if (t0 == null) return { error: "Couldn't read that start time. Use m:ss or seconds, e.g. 1:23 or 83.5." };
+  const t1 = end ? parseTime(end) : t0 + MAX_GIF_SECONDS;
+  if (t1 == null) return { error: "Couldn't read that end time. Use m:ss or seconds, e.g. 1:27 or 87.5." };
+  if (t1 <= t0) return { error: 'End time must be after the start time.' };
+
+  return { videoId: link.videoId, t0, t1: Math.min(t1, t0 + MAX_GIF_SECONDS) };
 }
 
 function applyAction(action, t0, t1) {

@@ -11,6 +11,17 @@ const COMMANDS = [
       { type: 3, name: 'caption', description: 'Optional caption to overlay on the GIF', required: false },
     ],
   },
+  {
+    name: 'clip',
+    description: 'Make a GIF from a YouTube link and exact timestamps',
+    type: 1,
+    options: [
+      { type: 3, name: 'url', description: 'YouTube link (a ?t= in the link is used as the start)', required: true },
+      { type: 3, name: 'start', description: 'Start time, e.g. 1:23 or 83.5', required: false },
+      { type: 3, name: 'end', description: 'End time, at most 4s after start', required: false },
+      { type: 3, name: 'caption', description: 'Optional caption to overlay on the GIF', required: false },
+    ],
+  },
 ];
 
 const url = `${config.discordApiBase}/applications/${config.discordAppId}/commands`;
