@@ -34,7 +34,7 @@ function buildContent(source, t0, t1, windowIdx, isPublic) {
   if (!match) {
     if (source.windows.length) parts.push('custom start');
   } else {
-    const exact = Math.abs(match.start - t0) < 0.01 && Math.abs(match.end - t1) < 0.01;
+    const exact = Math.abs(match.start - t0) < 0.01;
     parts.push(`match ${windowIdx + 1} of ${source.windows.length}${exact ? '' : ' (nudged)'}`);
     parts.push(match.text ? `“${escapeMd(truncate(match.text, 80))}”` : 'no subtitles, best guess');
   }
@@ -161,8 +161,14 @@ async function clipSource({ videoId, t0, t1 }) {
   return { source, t0, t1: video.duration ? Math.min(t1, video.duration) : t1 };
 }
 
+// A match's range, stretched to the requested length when one was given.
+export function matchRange(match, length, videoDuration) {
+  const end = length ? match.start + Math.min(length, MAX_GIF_SECONDS) : match.end;
+  return [match.start, videoDuration ? Math.min(end, videoDuration) : end];
+}
+
 export async function runGif(jobData) {
-  const { scene, caption, token, clip, videoIdx, videos, isPublic = false } = jobData;
+  const { scene, caption, length, token, clip, videoIdx, videos, isPublic = false } = jobData;
   let { source = null, t0 = null, t1 = null, windowIdx = 0, sessionKey = null } = jobData;
 
   try {
@@ -173,14 +179,14 @@ export async function runGif(jobData) {
     source ??= await findSource(scene, videoIdx, videos);
     if (t0 == null || t1 == null) {
       if (!source.windows[windowIdx]) windowIdx = 0;
-      ({ start: t0, end: t1 } = source.windows[windowIdx]);
+      [t0, t1] = matchRange(source.windows[windowIdx], length, source.duration);
     }
 
     const clipFile = await extract(source.videoId, t0, t1);
     const gif = await render(clipFile, caption ?? null, t0, t1);
 
     sessionKey ??= randomBytes(8).toString('hex');
-    if (!isPublic) setSession(sessionKey, { scene, caption, source, windowIdx }, SESSION_TTL);
+    if (!isPublic) setSession(sessionKey, { scene, caption, length, source, windowIdx }, SESSION_TTL);
 
     const content = buildContent(source, t0, t1, windowIdx, isPublic);
     if (isPublic) await postPublic(token, gif, content);

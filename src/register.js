@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { config } from './config.js';
+import { MAX_GIF_SECONDS } from './pipeline/render.js';
 
 const COMMANDS = [
   {
@@ -9,6 +10,7 @@ const COMMANDS = [
     options: [
       { type: 3, name: 'scene', description: "Describe the scene (e.g. 'Hercules Fates cutting the thread')", required: true },
       { type: 3, name: 'caption', description: 'Optional caption to overlay on the GIF', required: false },
+      { type: 10, name: 'length', description: `GIF length in seconds (default 4, max ${MAX_GIF_SECONDS})`, required: false, min_value: 1, max_value: MAX_GIF_SECONDS },
     ],
   },
   {
@@ -18,7 +20,7 @@ const COMMANDS = [
     options: [
       { type: 3, name: 'url', description: 'YouTube link (a ?t= in the link is used as the start)', required: true },
       { type: 3, name: 'start', description: 'Start time, e.g. 1:23 or 83.5', required: false },
-      { type: 3, name: 'end', description: 'End time, at most 4s after start', required: false },
+      { type: 3, name: 'end', description: `End time, at most ${MAX_GIF_SECONDS}s after start`, required: false },
       { type: 3, name: 'caption', description: 'Optional caption to overlay on the GIF', required: false },
     ],
   },

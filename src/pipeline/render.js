@@ -1,14 +1,21 @@
 import { spawn } from 'child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import os from 'os';
 import path from 'path';
 
 import { RenderError } from '../errors.js';
 
-const SIZE_LIMIT = 8 * 1024 * 1024;
-const PROFILES = [[12, 480], [10, 480], [8, 480], [8, 400], [8, 360], [8, 320]];
-export const MAX_GIF_SECONDS = 4.0;
-const DURATION_STEPS = [4.0, 3.5, 3.0, 2.5];
+// Just under Discord's 10MiB attachment cap, leaving room for multipart overhead.
+const SIZE_LIMIT = 9.5 * 1024 * 1024;
+// [fps, width, palette colors], best quality first.
+const PROFILES = [
+  [12, 480, 256], [10, 480, 256], [10, 400, 256], [8, 400, 192],
+  [8, 360, 128], [8, 320, 128], [6, 320, 96], [6, 280, 64], [5, 240, 64],
+];
+export const DEFAULT_GIF_SECONDS = 4.0;
+export const MAX_GIF_SECONDS = 60.0;
+const PROBE_SECONDS = 10.0;
+const DURATION_STEPS = [0.85, 0.7, 0.55];
 
 function assTime(seconds) {
   const h = Math.floor(seconds / 3600);
@@ -34,7 +41,7 @@ function buildAss(caption, duration) {
   );
 }
 
-async function encode(clipPath, caption, duration, fps, width) {
+async function encode(clipPath, caption, duration, [fps, width, colors]) {
   const tmp = mkdtempSync(path.join(os.tmpdir(), 'scenegif-'));
   const outPath = path.join(tmp, 'out.gif');
 
@@ -44,7 +51,7 @@ async function encode(clipPath, caption, duration, fps, width) {
     writeFileSync(assPath, buildAss(caption, duration), 'utf8');
     vf += `,ass=${assPath}`;
   }
-  vf += ',split[a][b];[a]palettegen=stats_mode=diff:reserve_transparent=0[p];[b][p]paletteuse=dither=bayer:bayer_scale=3';
+  vf += `,split[a][b];[a]palettegen=stats_mode=diff:reserve_transparent=0:max_colors=${colors}[p];[b][p]paletteuse=dither=bayer:bayer_scale=3`;
 
   // Full opaque frames: transdiff/offset frames can leave Discord mobile stuck on the blurred placeholder.
   const args = ['-y', '-i', clipPath, '-t', String(duration), '-vf', vf, '-gifflags', '-offsetting-transdiff', '-loop', '0', outPath];
@@ -59,21 +66,35 @@ async function encode(clipPath, caption, duration, fps, width) {
     });
   });
 
-  return readFileSync(outPath);
+  try {
+    return readFileSync(outPath);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+// GIF size scales roughly with fps × pixel count, so one probe encode predicts the rest.
+function estimate(probe, [fps0, w0], [fps, w]) {
+  return probe * (fps / fps0) * (w / w0) ** 2;
 }
 
 export async function render(clipPath, caption, t0, t1, maxDuration = MAX_GIF_SECONDS) {
   const duration = Math.min(t1 - t0, maxDuration);
-  let gif;
+  const probeDuration = Math.min(duration, PROBE_SECONDS);
+  let gif = await encode(clipPath, caption, probeDuration, PROFILES[0]);
+  if (probeDuration === duration && gif.length <= SIZE_LIMIT) return gif;
 
-  for (const [fps, width] of PROFILES) {
-    gif = await encode(clipPath, caption, duration, fps, width);
+  // Long clips are probed on their first few seconds and extrapolated, rather than fully encoded at top quality.
+  const probe = gif.length * (duration / probeDuration);
+  const start = probeDuration === duration ? 1 : 0;
+  for (const profile of PROFILES.slice(start)) {
+    if (profile !== PROFILES.at(-1) && estimate(probe, PROFILES[0], profile) > SIZE_LIMIT * 1.2) continue;
+    gif = await encode(clipPath, caption, duration, profile);
     if (gif.length <= SIZE_LIMIT) return gif;
   }
 
-  for (const dur of DURATION_STEPS) {
-    if (dur >= duration) continue;
-    gif = await encode(clipPath, caption, dur, ...PROFILES.at(-1));
+  for (const frac of DURATION_STEPS) {
+    gif = await encode(clipPath, caption, duration * frac, PROFILES.at(-1));
     if (gif.length <= SIZE_LIMIT) return gif;
   }
 

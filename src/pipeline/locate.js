@@ -7,7 +7,7 @@ import Piscina from 'piscina';
 import { cacheGet, cacheSet, sceneHash } from '../cache.js';
 import { config } from '../config.js';
 import { termOverlap, terms } from '../text.js';
-import { MAX_GIF_SECONDS } from './render.js';
+import { DEFAULT_GIF_SECONDS } from './render.js';
 
 const SUB_LANGS = ['en', 'en-US', 'en-GB'];
 const MAX_MATCHES = 10;
@@ -87,7 +87,7 @@ function heatAt(heatmap, t) {
 function heatPeaks(heatmap, count) {
   const peaks = [];
   for (const seg of [...heatmap].sort((a, b) => b.value - a.value)) {
-    if (peaks.some(p => Math.abs(p.start_time - seg.start_time) < MAX_GIF_SECONDS * 2)) continue;
+    if (peaks.some(p => Math.abs(p.start_time - seg.start_time) < DEFAULT_GIF_SECONDS * 2)) continue;
     peaks.push(seg);
     if (peaks.length === count) break;
   }
@@ -123,8 +123,8 @@ async function rankCues(cues, queries, heatmap) {
 
 function clipRange(anchor, duration) {
   let start = Math.max(0, anchor - LEAD_IN);
-  if (duration) start = Math.max(0, Math.min(start, duration - MAX_GIF_SECONDS));
-  const end = start + MAX_GIF_SECONDS;
+  if (duration) start = Math.max(0, Math.min(start, duration - DEFAULT_GIF_SECONDS));
+  const end = start + DEFAULT_GIF_SECONDS;
   return { start, end: duration ? Math.min(end, duration) : end };
 }
 

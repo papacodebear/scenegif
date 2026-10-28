@@ -11,9 +11,9 @@ import pLimit from 'p-limit';
 
 import { config } from './config.js';
 import { warmupEmbedder } from './pipeline/locate.js';
-import { MAX_GIF_SECONDS } from './pipeline/render.js';
+import { DEFAULT_GIF_SECONDS, MAX_GIF_SECONDS } from './pipeline/render.js';
 import { checkRateLimit } from './rate-limit.js';
-import { cid, runGif } from './run-gif.js';
+import { cid, matchRange, runGif } from './run-gif.js';
 import { getSession } from './session-store.js';
 import { formatTime, parseTime } from './timecode.js';
 import { parseYouTubeUrl } from './youtube-url.js';
@@ -43,7 +43,7 @@ app.post('/interactions', verifyKeyMiddleware(config.discordPublicKey), async (r
 
     if (!checkRateLimit(userId)) return res.json(ephemeral("You're going too fast. Try again in a moment."));
 
-    const job = { scene: options.scene ?? null, caption: options.caption ?? null, token, channelId: channel_id, windowIdx: 0 };
+    const job = { scene: options.scene ?? null, caption: options.caption ?? null, length: options.length ?? null, token, channelId: channel_id, windowIdx: 0 };
     if (data.name === 'clip') {
       const clip = readClipOptions(options);
       if (clip.error) return res.json(ephemeral(clip.error));
@@ -68,9 +68,9 @@ app.post('/interactions', verifyKeyMiddleware(config.discordPublicKey), async (r
     const session = getSession(sessionKey);
     if (!session) return res.json(ephemeral('Session expired. Run the command again.'));
 
-    const { scene, caption, source } = session;
+    const { scene, caption, length, source } = session;
     let { windowIdx } = session;
-    const job = { scene, caption, token, channelId: channel_id, source, sessionKey };
+    const job = { scene, caption, length, token, channelId: channel_id, source, sessionKey };
 
     if (action === 'post') {
       enqueue({ ...job, t0, t1, windowIdx, isPublic: true });
@@ -96,7 +96,7 @@ app.post('/interactions', verifyKeyMiddleware(config.discordPublicKey), async (r
       windowIdx = parseInt(data.values?.[0], 10);
       const match = source.windows[windowIdx];
       if (!match) return res.sendStatus(400);
-      ({ start: t0, end: t1 } = match);
+      [t0, t1] = matchRange(match, length, source.duration);
     } else {
       [t0, t1] = applyAction(action, t0, t1);
     }
@@ -161,7 +161,7 @@ function readClipOptions({ url, start, end }) {
 
   const t0 = start ? parseTime(start) : (link.t ?? 0);
   if (t0 == null) return { error: "Couldn't read that start time. Use m:ss or seconds, e.g. 1:23 or 83.5." };
-  const t1 = end ? parseTime(end) : t0 + MAX_GIF_SECONDS;
+  const t1 = end ? parseTime(end) : t0 + DEFAULT_GIF_SECONDS;
   if (t1 == null) return { error: "Couldn't read that end time. Use m:ss or seconds, e.g. 1:27 or 87.5." };
   if (t1 <= t0) return { error: 'End time must be after the start time.' };
 
@@ -173,7 +173,7 @@ function applyAction(action, t0, t1) {
   if (action === 'shift_back') return [Math.max(0, t0 - 1), Math.max(1, t1 - 1)];
   if (action === 'shift_fwd') return [t0 + 1, t1 + 1];
   if (action === 'shorter') { const d = Math.min(0.5, Math.max(0, (dur - 1) / 2)); return [t0 + d, t1 - d]; }
-  if (action === 'longer') return [Math.max(0, t0 - 0.5), t1 + 0.5];
+  if (action === 'longer') { const d = Math.min(0.5, Math.max(0, (MAX_GIF_SECONDS - dur) / 2)); return [Math.max(0, t0 - d), t1 + d]; }
   return [t0, t1];
 }
 
