@@ -16,6 +16,8 @@ export const DEFAULT_GIF_SECONDS = 4.0;
 export const MAX_GIF_SECONDS = 60.0;
 const PROBE_SECONDS = 10.0;
 const DURATION_STEPS = [0.85, 0.7, 0.55];
+// gifsicle --lossy levels, tried in order before dropping to a smaller profile.
+const LOSSY_LEVELS = [40, 80];
 
 function assTime(seconds) {
   const h = Math.floor(seconds / 3600);
@@ -45,7 +47,8 @@ async function encode(clipPath, caption, duration, [fps, width, colors]) {
   const tmp = mkdtempSync(path.join(os.tmpdir(), 'scenegif-'));
   const outPath = path.join(tmp, 'out.gif');
 
-  let vf = `fps=${fps},scale=${width}:-1:flags=lanczos`;
+  // Denoise so grain doesn't dither into LZW-defeating noise; mpdecimate drops near-duplicate frames.
+  let vf = `fps=${fps},scale=${width}:-1:flags=lanczos,hqdn3d=2:1.5:4:3,mpdecimate`;
   if (caption) {
     const assPath = path.join(tmp, 'cap.ass');
     writeFileSync(assPath, buildAss(caption, duration), 'utf8');
@@ -54,7 +57,7 @@ async function encode(clipPath, caption, duration, [fps, width, colors]) {
   vf += `,split[a][b];[a]palettegen=stats_mode=diff:reserve_transparent=0:max_colors=${colors}[p];[b][p]paletteuse=dither=bayer:bayer_scale=3`;
 
   // Full opaque frames: transdiff/offset frames can leave Discord mobile stuck on the blurred placeholder.
-  const args = ['-y', '-i', clipPath, '-t', String(duration), '-vf', vf, '-gifflags', '-offsetting-transdiff', '-loop', '0', outPath];
+  const args = ['-y', '-i', clipPath, '-t', String(duration), '-vf', vf, '-fps_mode', 'vfr', '-gifflags', '-offsetting-transdiff', '-loop', '0', outPath];
 
   await new Promise((resolve, reject) => {
     const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
@@ -73,6 +76,30 @@ async function encode(clipPath, caption, duration, [fps, width, colors]) {
   }
 }
 
+// Lossy LZW: perturbs pixels slightly so runs compress better, without touching frames or size.
+async function lossy(gif, level) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn('gifsicle', [`--lossy=${level}`], { stdio: ['pipe', 'pipe', 'ignore'] });
+    const chunks = [];
+    proc.stdout.on('data', d => chunks.push(d));
+    proc.on('error', reject);
+    proc.on('close', code => {
+      if (code !== 0) reject(new RenderError('Failed to compress GIF.'));
+      else resolve(Buffer.concat(chunks));
+    });
+    proc.stdin.end(gif);
+  });
+}
+
+async function fitLossy(gif) {
+  if (gif.length <= SIZE_LIMIT) return gif;
+  for (const level of LOSSY_LEVELS) {
+    const out = await lossy(gif, level);
+    if (out.length <= SIZE_LIMIT) return out;
+  }
+  return null;
+}
+
 // GIF size scales roughly with fps × pixel count, so one probe encode predicts the rest.
 function estimate(probe, [fps0, w0], [fps, w]) {
   return probe * (fps / fps0) * (w / w0) ** 2;
@@ -81,20 +108,26 @@ function estimate(probe, [fps0, w0], [fps, w]) {
 export async function render(clipPath, caption, t0, t1, maxDuration = MAX_GIF_SECONDS) {
   const duration = Math.min(t1 - t0, maxDuration);
   const probeDuration = Math.min(duration, PROBE_SECONDS);
-  let gif = await encode(clipPath, caption, probeDuration, PROFILES[0]);
-  if (probeDuration === duration && gif.length <= SIZE_LIMIT) return gif;
+  const probeGif = await encode(clipPath, caption, probeDuration, PROFILES[0]);
+  if (probeDuration === duration) {
+    const fit = await fitLossy(probeGif);
+    if (fit) return fit;
+  }
 
   // Long clips are probed on their first few seconds and extrapolated, rather than fully encoded at top quality.
-  const probe = gif.length * (duration / probeDuration);
+  const gain = (await lossy(probeGif, LOSSY_LEVELS.at(-1))).length / probeGif.length;
+  const probe = probeGif.length * (duration / probeDuration) * gain;
   const start = probeDuration === duration ? 1 : 0;
+  let gif;
   for (const profile of PROFILES.slice(start)) {
     if (profile !== PROFILES.at(-1) && estimate(probe, PROFILES[0], profile) > SIZE_LIMIT * 1.2) continue;
     gif = await encode(clipPath, caption, duration, profile);
-    if (gif.length <= SIZE_LIMIT) return gif;
+    const fit = await fitLossy(gif);
+    if (fit) return fit;
   }
 
   for (const frac of DURATION_STEPS) {
-    gif = await encode(clipPath, caption, duration * frac, PROFILES.at(-1));
+    gif = await lossy(await encode(clipPath, caption, duration * frac, PROFILES.at(-1)), LOSSY_LEVELS.at(-1));
     if (gif.length <= SIZE_LIMIT) return gif;
   }
 

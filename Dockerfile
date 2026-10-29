@@ -5,7 +5,7 @@ ARG GIT_SHA=unknown
 ENV GIT_SHA=$GIT_SHA
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ffmpeg python3 ca-certificates fonts-dejavu-core \
+  && apt-get install -y --no-install-recommends ffmpeg gifsicle python3 ca-certificates fonts-dejavu-core \
   && rm -rf /var/lib/apt/lists/*
 
 # Debian's packaged yt-dlp is too stale for YouTube; use the upstream zipapp

@@ -123,8 +123,11 @@ fps=12,scale=480:-1:flags=lanczos,split[a][b];
 Captions: burn an ASS subtitle file, not `drawtext`. ASS gives outlines, word
 wrap, and positioning for free; `drawtext` makes you compute all of it.
 
-Budget: 480px / 12fps / ≤4s lands around 2–5MB. If output exceeds 8MB, step
-down fps → width → duration in that order and re-encode.
+Budget: 4s by default, up to 60s, under 9.5MB. `hqdn3d` denoise and
+`mpdecimate` run before palettegen so grain and duplicate frames don't waste
+bytes. If output is over budget, try `gifsicle --lossy` first, then step down
+fps → width → colors, then trim duration. Clips over 10s are probed on their
+first 10s to pick a starting profile instead of fully encoding at top quality.
 
 **Not cached** — caption varies per request.
 
