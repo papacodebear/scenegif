@@ -9,7 +9,7 @@ import { RenderError } from '../errors.js';
 const SIZE_LIMIT = 9.5 * 1024 * 1024;
 // [fps, width, palette colors], best quality first.
 const PROFILES = [
-  [12, 480, 256], [10, 480, 256], [10, 400, 256], [8, 400, 192],
+  [12, 720, 256], [12, 640, 256], [12, 480, 256], [10, 480, 256], [10, 400, 256], [8, 400, 192],
   [8, 360, 128], [8, 320, 128], [6, 320, 96], [6, 280, 64], [5, 240, 64],
 ];
 export const DEFAULT_GIF_SECONDS = 4.0;
@@ -48,7 +48,7 @@ async function encode(clipPath, caption, duration, [fps, width, colors]) {
   const outPath = path.join(tmp, 'out.gif');
 
   // Denoise so grain doesn't dither into LZW-defeating noise; mpdecimate drops near-duplicate frames.
-  let vf = `fps=${fps},scale=${width}:-1:flags=lanczos,hqdn3d=2:1.5:4:3,mpdecimate`;
+  let vf = `fps=${fps},scale='min(${width},iw)':-1:flags=lanczos,hqdn3d=2:1.5:4:3,mpdecimate`;
   if (caption) {
     const assPath = path.join(tmp, 'cap.ass');
     writeFileSync(assPath, buildAss(caption, duration), 'utf8');
