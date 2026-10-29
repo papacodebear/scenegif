@@ -177,7 +177,7 @@ UX failure mode, so the user previews before posting. The preview's text links
 the source video at the chosen timestamp and shows which match it is.
 
 ```
-🎬 Video title (linked to youtu.be/ID?t=123)
+https://youtu.be/ID?t=123
 2:03 → 2:07 · match 1 of 5 · "matched subtitle text"
 [◀ -1s] [+1s ▶] [− shorter] [+ longer]
 [⏱ set start…] [📤 post]

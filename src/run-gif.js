@@ -26,8 +26,9 @@ function escapeMd(text) {
 
 function buildContent(source, t0, t1, windowIdx, isPublic) {
   const url = `https://youtu.be/${source.videoId}?t=${Math.floor(t0)}`;
-  const link = `🎬 [${escapeMd(source.title)}](<${url}>)`;
-  if (isPublic) return `-# ${link}`;
+  // Angle brackets stop Discord adding a YouTube embed under the GIF.
+  const link = `<${url}>`;
+  if (isPublic) return link;
 
   const parts = [`${formatTime(t0)} → ${formatTime(t0 + Math.min(t1 - t0, MAX_GIF_SECONDS))}`];
   const match = windowIdx == null ? null : source.windows[windowIdx];
